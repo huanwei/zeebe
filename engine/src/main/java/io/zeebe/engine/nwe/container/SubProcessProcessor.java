@@ -57,13 +57,27 @@ public final class SubProcessProcessor
   public void onActivated(
       final ExecutableFlowElementContainer element, final BpmnElementContext context) {
 
-    final var noneStartEvent = element.getNoneStartEvent();
-    if (noneStartEvent == null) {
-      throw new BpmnProcessingException(
-          context, "Expected to activate the none start event of the sub-process but not found.");
-    }
+    if (element.hasNoneStartEvent()) {
+      // embedded sub-process is activated
+      final var noneStartEvent = element.getNoneStartEvent();
+      if (noneStartEvent == null) {
+        throw new BpmnProcessingException(
+            context, "Expected to activate the none start event of the sub-process but not found.");
+      }
 
-    stateTransitionBehavior.activateChildInstance(context, noneStartEvent);
+      stateTransitionBehavior.activateChildInstance(context, noneStartEvent);
+
+    } else {
+      // event sub-process is activated
+      final var startEvent = element.getStartEvents().get(0);
+      if (startEvent == null) {
+        throw new BpmnProcessingException(
+            context,
+            "Expected to activate the event start event of the sub-process but not found.");
+      }
+
+      stateTransitionBehavior.activateChildInstance(context, startEvent);
+    }
   }
 
   @Override
@@ -96,7 +110,10 @@ public final class SubProcessProcessor
 
     eventSubscriptionBehavior.unsubscribeFromEvents(context);
 
-    stateTransitionBehavior.terminateChildInstances(context);
+    final var noActiveChildInstances = stateTransitionBehavior.terminateChildInstances(context);
+    if (noActiveChildInstances) {
+      stateTransitionBehavior.transitionToTerminated(context);
+    }
   }
 
   @Override
