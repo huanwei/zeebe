@@ -5,7 +5,7 @@ export JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS -XX:MaxRAMFraction=$((LIMITS_CPU))"
 
 tmpfile=$(mktemp)
 
-mvn -o -B --fail-never -T$LIMITS_CPU -s ${MAVEN_SETTINGS_XML} verify -P skip-unstable-ci,parallel-tests -pl qa/integration-tests -pl upgrade-tests -DtestMavenId=2 -Dsurefire.rerunFailingTestsCount=5 | tee ${tmpfile}
+mvn -o -B --fail-never -T$LIMITS_CPU -s ${MAVEN_SETTINGS_XML} verify -P skip-unstable-ci,parallel-tests -pl qa/integration-tests -pl upgrade-tests -DtestMavenId=2 -Dsurefire.rerunFailingTestsCount=1 | tee ${tmpfile}
 
 status=${PIPESTATUS[0]}
 
@@ -18,7 +18,7 @@ if grep -q "\[WARNING\] Flakes:" ${tmpfile}; then
   grep "\[ERROR\]   Run 1: " ${tmpfile} | awk '{print $4}' >> ./target/FlakyTests.txt
 
   echo ERROR: Flaky Tests detected>&2
-  
+
   exit 1
 fi
 
