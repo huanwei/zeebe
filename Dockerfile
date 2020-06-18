@@ -1,3 +1,7 @@
+
+ARG JDK_TAG=11-jre-slim
+
+
 FROM alpine:latest as builder
 ARG DISTBALL
 
@@ -16,7 +20,7 @@ ADD https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini ${TMP
 COPY docker/utils/startup.sh ${TMP_DIR}/bin/startup.sh
 RUN chmod +x -R ${TMP_DIR}/bin/
 
-FROM openjdk:11-jre-slim as app
+FROM openjdk:${JDK_TAG} as app
 
 ENV ZB_HOME=/usr/local/zeebe \
     ZEEBE_LOG_LEVEL=info \
