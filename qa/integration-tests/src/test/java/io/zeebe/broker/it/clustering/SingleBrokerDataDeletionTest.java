@@ -16,6 +16,7 @@ import io.zeebe.broker.system.configuration.ExporterCfg;
 import io.zeebe.exporter.api.Exporter;
 import io.zeebe.exporter.api.context.Controller;
 import io.zeebe.protocol.record.Record;
+import io.zeebe.test.util.TestUtil;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -25,19 +26,23 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.springframework.util.unit.DataSize;
 
 public class SingleBrokerDataDeletionTest {
 
-  private static final Duration SNAPSHOT_PERIOD = Duration.ofMinutes(1);
-  private static final int SEGMENT_COUNT = 10;
+  private static final Duration SNAPSHOT_PERIOD = Duration.ofMinutes(5);
+  private static final int SEGMENT_COUNT = 5;
 
   @Rule
   public final ClusteringRule clusteringRule =
       new ClusteringRule(1, 1, 1, this::configureCustomExporter);
+
+  private final AtomicLong writtenRecords = new AtomicLong(0);
 
   private void configureCustomExporter(final BrokerCfg brokerCfg) {
     final DataCfg data = brokerCfg.getData();
@@ -49,6 +54,15 @@ public class SingleBrokerDataDeletionTest {
     final ExporterCfg exporterCfg = new ExporterCfg();
     exporterCfg.setClassName(ControllableExporter.class.getName());
     brokerCfg.setExporters(Collections.singletonMap("snapshot-test-exporter", exporterCfg));
+  }
+
+  @Before
+  public void init() {
+    ControllableExporter.NOT_EXPORTED_RECORDS.clear();
+    ControllableExporter.updatePosition(true);
+    ControllableExporter.EXPORTED_RECORDS.set(0);
+
+    writtenRecords.set(0);
   }
 
   @Test
@@ -63,15 +77,27 @@ public class SingleBrokerDataDeletionTest {
       writeToLog();
     }
 
+    TestUtil.waitUntil(
+        () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
+        () ->
+            String.format(
+                "Expected all written records to be exported (%d/%d)",
+                ControllableExporter.EXPORTED_RECORDS.get(), writtenRecords.get()));
+
     // when
     ControllableExporter.updatePosition(false);
 
     // write more events
-    while (getSegmentsCount(broker) <= SEGMENT_COUNT + 1) {
+    while (getSegmentsCount(broker) <= SEGMENT_COUNT * 2) {
       writeToLog();
     }
-    // write one more to make sure last processed position in segment 3
-    writeToLog();
+
+    TestUtil.waitUntil(
+        () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
+        () ->
+            String.format(
+                "Expected all written records to be exported (%d/%d)",
+                ControllableExporter.EXPORTED_RECORDS.get(), writtenRecords.get()));
 
     // increase snapshot interval and wait
     clusteringRule.getClock().addTime(SNAPSHOT_PERIOD);
@@ -81,14 +107,34 @@ public class SingleBrokerDataDeletionTest {
     final var firstNonExportedPosition =
         ControllableExporter.NOT_EXPORTED_RECORDS.get(0).getPosition();
 
-    reader.seek(firstNonExportedPosition);
-    assertThat(reader.hasNext()).isTrue();
-    assertThat(reader.next().getPosition()).isEqualTo(firstNonExportedPosition);
+    TestUtil.waitUntil(
+        () -> {
+          try {
+            // may fail if the compaction is not completed yet
+            reader.seek(firstNonExportedPosition);
+            return reader.hasNext();
+
+          } catch (final Exception ignore) {
+            return false;
+          }
+        });
+
+    assertThat(reader.next().getPosition())
+        .describedAs("Expected first non-exported record to be present in the log but not found.")
+        .isEqualTo(firstNonExportedPosition);
 
     // when
     final var segmentsBeforeSnapshot = getSegmentsCount(broker);
     ControllableExporter.updatePosition(true);
+
     writeToLog();
+
+    TestUtil.waitUntil(
+        () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
+        () ->
+            String.format(
+                "Expected all written records to be exported (%d/%d)",
+                ControllableExporter.EXPORTED_RECORDS.get(), writtenRecords.get()));
 
     // increase snapshot interval and wait
     clusteringRule.getClock().addTime(SNAPSHOT_PERIOD);
@@ -127,6 +173,9 @@ public class SingleBrokerDataDeletionTest {
   public static class ControllableExporter implements Exporter {
     static final List<Record> NOT_EXPORTED_RECORDS = new CopyOnWriteArrayList<>();
     static volatile boolean shouldExport = true;
+
+    static final AtomicLong EXPORTED_RECORDS = new AtomicLong(0);
+
     private Controller controller;
 
     static void updatePosition(final boolean flag) {
@@ -145,6 +194,8 @@ public class SingleBrokerDataDeletionTest {
       } else {
         NOT_EXPORTED_RECORDS.add(record);
       }
+
+      EXPORTED_RECORDS.incrementAndGet();
     }
   }
 }

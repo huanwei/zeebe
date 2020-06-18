@@ -55,7 +55,12 @@ public final class TestUtil {
       final int retries,
       final String message,
       final Object... args) {
-    doRepeatedly(() -> null).until((r) -> condition.getAsBoolean(), retries, message, args);
+    waitUntil(condition, retries, () -> String.format(message, args));
+  }
+
+  public static void waitUntil(
+      final BooleanSupplier condition, final int retries, final Supplier<String> message) {
+    doRepeatedly(() -> null).until((r) -> condition.getAsBoolean(), retries, message);
   }
 
   public static class Invocation<T> {
@@ -87,7 +92,14 @@ public final class TestUtil {
         final int retries,
         final String message,
         final Object... args) {
-      return until(resultCondition, (e) -> false, retries, () -> String.format(message, args));
+      return until(resultCondition, retries, () -> String.format(message, args));
+    }
+
+    public T until(
+        final Function<T, Boolean> resultCondition,
+        final int retries,
+        final Supplier<String> message) {
+      return until(resultCondition, (e) -> false, retries, message);
     }
 
     public T until(

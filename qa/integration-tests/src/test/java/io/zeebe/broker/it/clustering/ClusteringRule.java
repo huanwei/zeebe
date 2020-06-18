@@ -55,6 +55,7 @@ import java.net.InetSocketAddress;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -154,7 +155,7 @@ public final class ClusteringRule extends ExternalResource {
 
     brokers = new HashMap<>();
     brokerCfgs = new HashMap<>();
-    this.partitionIds =
+    partitionIds =
         IntStream.range(START_PARTITION_ID, START_PARTITION_ID + partitionCount)
             .boxed()
             .collect(Collectors.toList());
@@ -369,7 +370,7 @@ public final class ClusteringRule extends ExternalResource {
             () -> {
               try {
                 return client.newTopologyRequest().send().join();
-              } catch (Exception e) {
+              } catch (final Exception e) {
                 LOG.trace("Topology request failed: ", e);
                 return null;
               }
@@ -644,10 +645,11 @@ public final class ClusteringRule extends ExternalResource {
     final var referenceToResult =
         new AtomicReference<>(Optional.<FileBasedSnapshotMetadata>empty());
     final File snapshotsDir = getSnapshotsDirectory(broker);
+
     waitUntil(
         () -> {
           final File[] files = snapshotsDir.listFiles();
-          if (files == null || files.length != 1) {
+          if (files == null || files.length == 0) {
             return false;
           }
 
@@ -662,7 +664,11 @@ public final class ClusteringRule extends ExternalResource {
 
           return false;
         },
-        1000);
+        1000,
+        () ->
+            String.format(
+                "Expected new snapshot in directory '%s' but not found. Available snapshots: '%s'",
+                snapshotsDir, Arrays.toString(snapshotsDir.listFiles())));
 
     return referenceToResult
         .get()
@@ -681,7 +687,7 @@ public final class ClusteringRule extends ExternalResource {
     private final CountDownLatch latch;
 
     LeaderListener(final int partitionCount) {
-      this.latch = new CountDownLatch(partitionCount);
+      latch = new CountDownLatch(partitionCount);
     }
 
     @Override
