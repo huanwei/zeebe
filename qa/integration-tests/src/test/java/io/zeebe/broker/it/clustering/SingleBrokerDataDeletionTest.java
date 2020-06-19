@@ -7,6 +7,7 @@
  */
 package io.zeebe.broker.it.clustering;
 
+import static io.zeebe.test.util.TestUtil.waitUntil;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.zeebe.broker.Broker;
@@ -16,7 +17,6 @@ import io.zeebe.broker.system.configuration.ExporterCfg;
 import io.zeebe.exporter.api.Exporter;
 import io.zeebe.exporter.api.context.Controller;
 import io.zeebe.protocol.record.Record;
-import io.zeebe.test.util.TestUtil;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -77,7 +77,7 @@ public class SingleBrokerDataDeletionTest {
       writeToLog();
     }
 
-    TestUtil.waitUntil(
+    waitUntil(
         () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
         () ->
             String.format(
@@ -92,7 +92,7 @@ public class SingleBrokerDataDeletionTest {
       writeToLog();
     }
 
-    TestUtil.waitUntil(
+    waitUntil(
         () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
         () ->
             String.format(
@@ -107,7 +107,7 @@ public class SingleBrokerDataDeletionTest {
     final var firstNonExportedPosition =
         ControllableExporter.NOT_EXPORTED_RECORDS.get(0).getPosition();
 
-    TestUtil.waitUntil(
+    waitUntil(
         () -> {
           try {
             // may fail if the compaction is not completed yet
@@ -129,7 +129,7 @@ public class SingleBrokerDataDeletionTest {
 
     writeToLog();
 
-    TestUtil.waitUntil(
+    waitUntil(
         () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
         () ->
             String.format(
@@ -141,9 +141,12 @@ public class SingleBrokerDataDeletionTest {
     clusteringRule.waitForNewSnapshotAtBroker(broker, firstSnapshot);
 
     // then
-    assertThat(getSegmentsCount(broker))
-        .describedAs("Expected segment count to be less after a snapshot is taken")
-        .isLessThan(segmentsBeforeSnapshot);
+    waitUntil(
+        () -> getSegmentsCount(broker) < segmentsBeforeSnapshot,
+        () ->
+            String.format(
+                "Expected segment count to be less than %d after a snapshot is taken but was %d",
+                segmentsBeforeSnapshot, getSegmentsCount(broker)));
   }
 
   private void writeToLog() {
