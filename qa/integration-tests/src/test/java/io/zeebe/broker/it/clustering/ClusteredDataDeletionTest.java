@@ -7,6 +7,8 @@
  */
 package io.zeebe.broker.it.clustering;
 
+import static io.zeebe.test.util.TestUtil.waitUntil;
+
 import io.zeebe.broker.Broker;
 import io.zeebe.broker.system.configuration.BrokerCfg;
 import io.zeebe.broker.system.configuration.DataCfg;
@@ -14,7 +16,6 @@ import io.zeebe.broker.system.configuration.ExporterCfg;
 import io.zeebe.exporter.api.Exporter;
 import io.zeebe.exporter.api.context.Controller;
 import io.zeebe.protocol.record.Record;
-import io.zeebe.test.util.TestUtil;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -93,27 +94,19 @@ public final class ClusteredDataDeletionTest {
     final int leaderNodeId = clusteringRule.getLeaderForPartition(1).getNodeId();
     final Broker leader = clusteringRule.getBroker(leaderNodeId);
 
-    while (getSegmentsCount(leader) <= SEGMENT_COUNT) {
-      clusteringRule
-          .getClient()
-          .newPublishMessageCommand()
-          .messageName("msg")
-          .correlationKey("key")
-          .send()
-          .join();
-    }
+    fillSegments(List.of(leader), SEGMENT_COUNT);
 
     // when
-    final var segmentCount =
+    final var segmentCountBeforeSnapshot =
         takeSnapshotAndWaitForReplication(Collections.singletonList(leader), clusteringRule);
 
     // then
-    TestUtil.waitUntil(
-        () -> getSegments(leader).size() < segmentCount.get(leaderNodeId),
+    waitUntil(
+        () -> getSegmentsCount(leader) < segmentCountBeforeSnapshot.get(leaderNodeId),
         () ->
             String.format(
-                "Expected segment count of leader to be less than %s but was %s",
-                segmentCount.get(leaderNodeId), getSegments(leader).size()));
+                "Expected segment count of leader to be less than %s after a snapshot is taken but was %s",
+                segmentCountBeforeSnapshot.get(leaderNodeId), getSegments(leader).size()));
   }
 
   @Test
@@ -125,33 +118,25 @@ public final class ClusteredDataDeletionTest {
             .filter(b -> b.getConfig().getCluster().getNodeId() != leaderNodeId)
             .collect(Collectors.toList());
 
-    while (followers.stream()
-        .map(this::getSegmentsCount)
-        .allMatch(count -> count <= SEGMENT_COUNT)) {
-      clusteringRule
-          .getClient()
-          .newPublishMessageCommand()
-          .messageName("msg")
-          .correlationKey("key")
-          .send()
-          .join();
-    }
+    fillSegments(followers, SEGMENT_COUNT);
 
     // when
-    final var followerSegmentCounts = takeSnapshotAndWaitForReplication(followers, clusteringRule);
+    final var followerSegmentCountsBeforeSnapshot =
+        takeSnapshotAndWaitForReplication(followers, clusteringRule);
 
     // then
-    TestUtil.waitUntil(
+    waitUntil(
         () ->
             followers.stream()
                 .allMatch(
-                    b ->
-                        getSegments(b).size()
-                            < followerSegmentCounts.get(b.getConfig().getCluster().getNodeId())),
+                    follower ->
+                        getSegments(follower).size()
+                            < followerSegmentCountsBeforeSnapshot.get(
+                                follower.getConfig().getCluster().getNodeId())),
         () ->
             String.format(
-                "Expected segment count of followers to be less than %s but was %s",
-                followerSegmentCounts,
+                "Expected segment count of followers to be less than %s after a snapshot is taken but was %s",
+                followerSegmentCountsBeforeSnapshot,
                 followers.stream()
                     .collect(
                         Collectors.toMap(
@@ -161,16 +146,17 @@ public final class ClusteredDataDeletionTest {
 
   private Map<Integer, Integer> takeSnapshotAndWaitForReplication(
       final List<Broker> brokers, final ClusteringRule clusteringRule) {
-    final Map<Integer, Integer> segmentCounts = new HashMap<>();
+    final Map<Integer, Integer> segmentCountsBeforeSnapshot = new HashMap<>();
     brokers.forEach(
         b -> {
           final int nodeId = b.getConfig().getCluster().getNodeId();
-          segmentCounts.put(nodeId, getSegments(b).size());
+          segmentCountsBeforeSnapshot.put(nodeId, getSegments(b).size());
         });
 
     clusteringRule.getClock().addTime(SNAPSHOT_PERIOD);
     brokers.forEach(clusteringRule::waitForSnapshotAtBroker);
-    return segmentCounts;
+
+    return segmentCountsBeforeSnapshot;
   }
 
   private int getSegmentsCount(final Broker broker) {
@@ -185,6 +171,24 @@ public final class ClusteredDataDeletionTest {
     } catch (final IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  private void fillSegments(final List<Broker> brokers, final int segmentCount) {
+
+    while (brokers.stream().map(this::getSegmentsCount).allMatch(count -> count <= segmentCount)) {
+
+      writeRecord();
+    }
+  }
+
+  private void writeRecord() {
+    clusteringRule
+        .getClient()
+        .newPublishMessageCommand()
+        .messageName("msg")
+        .correlationKey("key")
+        .send()
+        .join();
   }
 
   public static class TestExporter implements Exporter {

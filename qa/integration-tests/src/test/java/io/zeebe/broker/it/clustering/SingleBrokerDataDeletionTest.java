@@ -16,6 +16,7 @@ import io.zeebe.broker.system.configuration.DataCfg;
 import io.zeebe.broker.system.configuration.ExporterCfg;
 import io.zeebe.exporter.api.Exporter;
 import io.zeebe.exporter.api.context.Controller;
+import io.zeebe.logstreams.log.LogStreamReader;
 import io.zeebe.protocol.record.Record;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -28,7 +29,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
-import org.junit.Before;
+import org.junit.After;
 import org.junit.Rule;
 import org.junit.Test;
 import org.springframework.util.unit.DataSize;
@@ -56,15 +57,6 @@ public class SingleBrokerDataDeletionTest {
     brokerCfg.setExporters(Collections.singletonMap("snapshot-test-exporter", exporterCfg));
   }
 
-  @Before
-  public void init() {
-    ControllableExporter.NOT_EXPORTED_RECORDS.clear();
-    ControllableExporter.updatePosition(true);
-    ControllableExporter.EXPORTED_RECORDS.set(0);
-
-    writtenRecords.set(0);
-  }
-
   @Test
   public void shouldNotCompactNotExportedEvents() {
     // given
@@ -73,74 +65,37 @@ public class SingleBrokerDataDeletionTest {
     final var logstream = clusteringRule.getLogStream(1);
     final var reader = logstream.newLogStreamReader().join();
 
-    while (getSegmentsCount(broker) <= SEGMENT_COUNT) {
-      writeToLog();
-    }
+    // - write records and update the exporter position
+    ControllableExporter.updatePosition(true);
+    fillSegments(broker, SEGMENT_COUNT);
 
-    waitUntil(
-        () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
-        () ->
-            String.format(
-                "Expected all written records to be exported (%d/%d)",
-                ControllableExporter.EXPORTED_RECORDS.get(), writtenRecords.get()));
-
-    // when
+    // - write more records but don't update the exporter position
     ControllableExporter.updatePosition(false);
+    fillSegments(broker, SEGMENT_COUNT * 2);
 
-    // write more events
-    while (getSegmentsCount(broker) <= SEGMENT_COUNT * 2) {
-      writeToLog();
-    }
-
-    waitUntil(
-        () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
-        () ->
-            String.format(
-                "Expected all written records to be exported (%d/%d)",
-                ControllableExporter.EXPORTED_RECORDS.get(), writtenRecords.get()));
-
-    // increase snapshot interval and wait
+    // - trigger a snapshot creation
     clusteringRule.getClock().addTime(SNAPSHOT_PERIOD);
     final var firstSnapshot = clusteringRule.waitForSnapshotAtBroker(broker);
 
-    // then
+    // then verify that the log still contains the records that are not exported
     final var firstNonExportedPosition =
         ControllableExporter.NOT_EXPORTED_RECORDS.get(0).getPosition();
 
-    waitUntil(
-        () -> {
-          try {
-            // may fail if the compaction is not completed yet
-            reader.seek(firstNonExportedPosition);
-            return reader.hasNext();
-
-          } catch (final Exception ignore) {
-            return false;
-          }
-        });
-
-    assertThat(reader.next().getPosition())
+    assertThat(hasRecordWithPosition(reader, firstNonExportedPosition))
         .describedAs("Expected first non-exported record to be present in the log but not found.")
-        .isEqualTo(firstNonExportedPosition);
+        .isTrue();
 
-    // when
+    // - write more records and update the exporter position again
     final var segmentsBeforeSnapshot = getSegmentsCount(broker);
+
     ControllableExporter.updatePosition(true);
+    fillSegments(broker, segmentsBeforeSnapshot + 1);
 
-    writeToLog();
-
-    waitUntil(
-        () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
-        () ->
-            String.format(
-                "Expected all written records to be exported (%d/%d)",
-                ControllableExporter.EXPORTED_RECORDS.get(), writtenRecords.get()));
-
-    // increase snapshot interval and wait
+    // - trigger the next snapshot creation
     clusteringRule.getClock().addTime(SNAPSHOT_PERIOD);
     clusteringRule.waitForNewSnapshotAtBroker(broker, firstSnapshot);
 
-    // then
+    // then verify that the log is now compacted after the exporter position was updated
     waitUntil(
         () -> getSegmentsCount(broker) < segmentsBeforeSnapshot,
         () ->
@@ -149,7 +104,23 @@ public class SingleBrokerDataDeletionTest {
                 segmentsBeforeSnapshot, getSegmentsCount(broker)));
   }
 
+  private void fillSegments(final Broker broker, final int segmentCount) {
+
+    while (getSegmentsCount(broker) <= segmentCount) {
+      writeToLog();
+      writtenRecords.incrementAndGet();
+    }
+
+    waitUntil(
+        () -> ControllableExporter.EXPORTED_RECORDS.get() >= writtenRecords.get(),
+        () ->
+            String.format(
+                "Expected all written records to be exported (%d/%d)",
+                ControllableExporter.EXPORTED_RECORDS.get(), writtenRecords.get()));
+  }
+
   private void writeToLog() {
+
     clusteringRule
         .getClient()
         .newPublishMessageCommand()
@@ -171,6 +142,33 @@ public class SingleBrokerDataDeletionTest {
     } catch (final IOException e) {
       throw new UncheckedIOException(e);
     }
+  }
+
+  private boolean hasRecordWithPosition(final LogStreamReader reader, final long recordPosition) {
+    waitUntil(
+        () -> {
+          try {
+            reader.seek(recordPosition);
+            return reader.hasNext();
+
+          } catch (final Exception ignore) {
+            // may fail if the compaction is not completed yet
+            return false;
+          }
+        },
+        () -> String.format("Expected to seek in the log to position %d", recordPosition));
+
+    final var readerPosition = reader.next().getPosition();
+    return readerPosition == recordPosition;
+  }
+
+  @After
+  public void cleanUp() {
+    ControllableExporter.NOT_EXPORTED_RECORDS.clear();
+    ControllableExporter.updatePosition(true);
+    ControllableExporter.EXPORTED_RECORDS.set(0);
+
+    writtenRecords.set(0);
   }
 
   public static class ControllableExporter implements Exporter {
